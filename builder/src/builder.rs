@@ -1,11 +1,23 @@
 use proc_macro2::TokenStream;
 use quote::quote_spanned;
-use syn::{spanned::Spanned, Data};
+use syn::Data;
 
+use crate::{templates::{emit_build_field, emit_setter}, util};
+
+#[derive(Debug)]
 pub(crate) struct BuilderField {
-    inner_field: syn::Field,
     name: syn::Ident,
     ty: syn::Type,
+    optional: bool,
+}
+
+fn is_option(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(ref path) = *ty {
+        if let Some(seg) = path.path.segments.first() {
+            return seg.ident == "Option";
+        }
+    }
+    false
 }
 
 impl BuilderField {
@@ -14,18 +26,27 @@ impl BuilderField {
         let name = field.ident.clone().unwrap();
         let ty = field.ty.clone();
         BuilderField {
-            inner_field: field,
             name,
             ty,
+            optional: is_option(&field.ty),
         }
     }
 
     fn to_tokens_with_optional_type(&self) -> TokenStream {
         let name = &self.name;
         let ty = &self.ty;
-        quote_spanned! {
-            name.span() =>
-            #name: Option<#ty>
+
+        if self.optional {
+            let non_optional_type = util::get_non_optional_type(ty);
+            quote_spanned! {
+                name.span() =>
+                #name: Option<#non_optional_type>
+            }
+        } else {
+            quote_spanned! {
+                name.span() =>
+                #name: Option<#ty>
+            }
         }
     }
 
@@ -38,6 +59,7 @@ impl BuilderField {
     }
 }
 
+#[derive(Debug)]
 pub struct BuilderFields {
     fields: Vec<BuilderField>,
 }
@@ -45,7 +67,7 @@ pub struct BuilderFields {
 impl BuilderFields {
     fn new(fields: Vec<syn::Field>) -> Self {
         BuilderFields {
-            fields: fields.into_iter().map(BuilderField::new).collect(),
+            fields: fields.into_iter().map(|field| BuilderField::new(field)).collect(),
         }
     }
 }
@@ -103,13 +125,54 @@ impl BuilderEmitter {
         }
     }
 
+    pub fn emit_setters(&self) -> TokenStream {
+        let fields = &self.fields.fields;
+        let recurse = fields
+            .iter()
+            .map(|field| emit_setter(&field.name, &field.ty, field.optional));
+        
+        quote::quote! {
+            #(#recurse)*
+        }
+    }
+
+    pub fn emit_build_fn(&self) -> TokenStream {
+        let name = &self.name;
+        let fields = &self.fields.fields;
+        let emitted_build_field_setters = fields
+            .iter()
+            .map(|field| emit_build_field(&field.name, field.optional));
+        quote::quote! {
+            pub fn build(&mut self) -> Result<#name, Box<dyn ::std::error::Error>> {
+                Ok(#name {
+                    #(#emitted_build_field_setters),*
+                })
+            }
+        }
+    }
+
     pub fn builder_emit_tokens(&self) -> TokenStream {
+        let builder_name = &self.builder_name;
+
         let builder_fn = &self.init_builder_tokens();
         let builder_struct = &self.builder_definition_tokens();
+
+        let emitted_field_setters = &self.emit_setters();
+
+        let emitted_build_fn = &self.emit_build_fn();
+
+        //eprintln!("emitted_build_fn: {:#?}", emitted_build_fn);
+        
         quote::quote! {
             #builder_struct
 
             #builder_fn
+
+            impl #builder_name {
+                #emitted_field_setters
+
+                #emitted_build_fn
+            }
         }
     }
 }

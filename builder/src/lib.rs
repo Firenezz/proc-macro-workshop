@@ -1,6 +1,8 @@
 use syn::parse_macro_input;
 
 mod builder;
+mod templates;
+mod util;
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
